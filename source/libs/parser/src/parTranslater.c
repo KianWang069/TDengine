@@ -1881,6 +1881,39 @@ static bool clauseSupportAlias(ESqlClause clause) {
   return SQL_CLAUSE_GROUP_BY == clause || SQL_CLAUSE_PARTITION_BY == clause || SQL_CLAUSE_ORDER_BY == clause;
 }
 
+static EDealRes translateColumnInGroupByClause(STranslateContext* pCxt, SColumnNode** pCol, bool *translateAsAlias) {
+  *translateAsAlias = false;
+  // count(*)/first(*)/last(*) and so on
+  if (0 == strcmp((*pCol)->colName, "*")) {
+    return DEAL_RES_CONTINUE;
+  }
+
+  if (pCxt->pParseCxt->biMode) {
+    SNode** ppNode = (SNode**)pCol;
+    bool ret;
+    pCxt->errCode = biRewriteToTbnameFunc(pCxt, ppNode, &ret);
+    if (TSDB_CODE_SUCCESS != pCxt->errCode) return DEAL_RES_ERROR;
+    if (ret) {
+      return translateFunction(pCxt, (SFunctionNode**)ppNode);
+    }
+  }
+
+  EDealRes res = DEAL_RES_CONTINUE;
+  if ('\0' != (*pCol)->tableAlias[0]) {
+    res = translateColumnWithPrefix(pCxt, pCol);
+  } else {
+    bool found = false;
+    res = translateColumnWithoutPrefix(pCxt, pCol);
+    if (!(*pCol)->node.asParam &&
+        res != DEAL_RES_CONTINUE &&
+        res != DEAL_RES_END) {
+      res = translateColumnUseAlias(pCxt, pCol, &found);
+      *translateAsAlias = true;
+    }
+  }
+  return res;
+}
+
 static EDealRes translateColumn(STranslateContext* pCxt, SColumnNode** pCol) {
   if (NULL == pCxt->pCurrStmt ||
       (isSelectStmt(pCxt->pCurrStmt) && NULL == ((SSelectStmt*)pCxt->pCurrStmt)->pFromTable)) {
@@ -5468,9 +5501,15 @@ static EDealRes replaceGroupByAliasImpl(SNode** pNode, void* pContext) {
   SReplaceGroupByAliasCxt* pCxt = pContext;
   SNodeList*               pProjectionList = pCxt->pProjectionList;
   SNode*                   pProject = NULL;
+  int32_t                  code = TSDB_CODE_SUCCESS;
+  STranslateContext*       pTransCxt = pCxt->pTranslateCxt;
   if (QUERY_NODE_VALUE == nodeType(*pNode)) {
+<<<<<<< Updated upstream
     STranslateContext* pTransCxt = pCxt->pTranslateCxt;
     SValueNode*        pVal = (SValueNode*)*pNode;
+=======
+    SValueNode* pVal = (SValueNode*) *pNode;
+>>>>>>> Stashed changes
     if (DEAL_RES_ERROR == translateValue(pTransCxt, pVal)) {
       return DEAL_RES_CONTINUE;
     }
@@ -5479,23 +5518,35 @@ static EDealRes replaceGroupByAliasImpl(SNode** pNode, void* pContext) {
     }
     int32_t pos = getPositionValue(pVal);
     if (0 < pos && pos <= LIST_LENGTH(pProjectionList)) {
+<<<<<<< Updated upstream
       SNode*  pNew = NULL;
       int32_t code = nodesCloneNode(nodesListGetNode(pProjectionList, pos - 1), (SNode**)&pNew);
+=======
+      SNode* pNew = NULL;
+      code = nodesCloneNode(nodesListGetNode(pProjectionList, pos - 1), (SNode**)&pNew);
+>>>>>>> Stashed changes
       if (TSDB_CODE_SUCCESS != code) {
         pCxt->pTranslateCxt->errCode = code;
         return DEAL_RES_ERROR;
       }
       nodesDestroyNode(*pNode);
       *pNode = pNew;
-      return DEAL_RES_CONTINUE;
-    } else {
-      return DEAL_RES_CONTINUE;
     }
   } else if (QUERY_NODE_COLUMN == nodeType(*pNode)) {
-    STranslateContext* pTransCxt = pCxt->pTranslateCxt;
-    return translateColumn(pTransCxt, (SColumnNode**)pNode);
+    bool     asAlias = false;
+    EDealRes res = translateColumnInGroupByClause(pTransCxt, (SColumnNode**)pNode, &asAlias);
+    if (DEAL_RES_ERROR == res) {
+      return DEAL_RES_ERROR;
+    }
+    if (nodeType(*pNode) == QUERY_NODE_COLUMN && !asAlias) {
+      return DEAL_RES_CONTINUE;
+    }
   }
-
+  code = translateExpr(pTransCxt, pNode);
+  if (TSDB_CODE_SUCCESS != code) {
+    pCxt->pTranslateCxt->errCode = code;
+    return DEAL_RES_ERROR;
+  }
   return DEAL_RES_CONTINUE;
 }
 
@@ -5578,11 +5629,8 @@ static int32_t translateGroupBy(STranslateContext* pCxt, SSelectStmt* pSelect) {
       NODES_DESTORY_LIST(pSelect->pGroupByList);
       return TSDB_CODE_SUCCESS;
     }
-    code = replaceGroupByAlias(pCxt, pSelect);
-  }
-  if (TSDB_CODE_SUCCESS == code) {
     pSelect->timeLineResMode = TIME_LINE_NONE;
-    code = translateExprList(pCxt, pSelect->pGroupByList);
+    code = replaceGroupByAlias(pCxt, pSelect);
   }
   return code;
 }
@@ -6278,9 +6326,6 @@ static int32_t translatePartitionBy(STranslateContext* pCxt, SSelectStmt* pSelec
       pSelect->timeLineResMode = TIME_LINE_MULTI;
     }
     code = replacePartitionByAlias(pCxt, pSelect);
-    if (TSDB_CODE_SUCCESS == code) {
-      code = translateExprList(pCxt, pSelect->pPartitionByList);
-    }
   }
   if (TSDB_CODE_SUCCESS == code) {
     code = translateExprList(pCxt, pSelect->pTags);
